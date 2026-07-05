@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=201
+GenericName=مدیریت گیم‌نت
+Comment=مدیریت گیم‌نت
+Exec=gamenet
+Icon=com.example.gamenet
+StartupWMClass=com.example.gamenet
+Terminal=false
+Categories=Game;Utility;
+MimeType=
