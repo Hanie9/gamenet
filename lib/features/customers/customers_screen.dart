@@ -7,7 +7,6 @@ import '../../core/widgets/empty_state.dart';
 import '../../core/widgets/section_header.dart';
 import '../../models/customer.dart';
 import '../../services/app_state.dart';
-import '../../services/customer_export_service.dart';
 import 'customer_detail_screen.dart';
 import 'customer_form_dialog.dart';
 
@@ -21,45 +20,11 @@ class CustomersScreen extends StatefulWidget {
 class _CustomersScreenState extends State<CustomersScreen> {
   final _searchController = TextEditingController();
   String _query = '';
-  bool _exporting = false;
 
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
-  }
-
-  Future<void> _exportExcel(List<Customer> customers) async {
-    if (_exporting) return;
-    if (customers.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('مشتری‌ای برای خروجی وجود ندارد')),
-      );
-      return;
-    }
-
-    setState(() => _exporting = true);
-    try {
-      final path = await CustomerExportService.exportToExcel(customers);
-      if (!mounted) return;
-      if (path != null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('فایل اکسل ذخیره شد:\n$path')),
-        );
-      }
-    } catch (e, stackTrace) {
-      debugPrint('Excel export error: $e');
-      debugPrint('$stackTrace');
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('خطا در ساخت فایل اکسل:\n$e'),
-          duration: const Duration(seconds: 6),
-        ),
-      );
-    } finally {
-      if (mounted) setState(() => _exporting = false);
-    }
   }
 
   List<Customer> _filtered(AppState state) {
@@ -84,30 +49,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
           SliverToBoxAdapter(
             child: SectionHeader(
               title: 'مشتریان',
-              subtitle: 'مدیریت اکانت و تاریخچه مشتریان',
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  OutlinedButton.icon(
-                    onPressed: _exporting
-                        ? null
-                        : () => _exportExcel(state.customers),
-                    icon: _exporting
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.download),
-                    label: const Text('دانلود اکسل'),
-                  ),
-                  const SizedBox(width: 12),
-                  ElevatedButton.icon(
-                    onPressed: () => CustomerFormDialog.show(context),
-                    icon: const Icon(Icons.person_add),
-                    label: const Text('مشتری جدید'),
-                  ),
-                ],
+              subtitle: 'داده‌ها در فایل «مشتریان.xlsx» در Documents/201 ذخیره می‌شوند',
+              trailing: ElevatedButton.icon(
+                onPressed: () => CustomerFormDialog.show(context),
+                icon: const Icon(Icons.person_add),
+                label: const Text('مشتری جدید'),
               ),
             ),
           ),

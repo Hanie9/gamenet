@@ -8,6 +8,7 @@ import '../../core/utils/responsive.dart';
 import '../../core/widgets/section_header.dart';
 import '../../models/cafe_item.dart';
 import '../../services/app_state.dart';
+import '../../services/data_folder_service.dart';
 
 class AdminScreen extends StatefulWidget {
   const AdminScreen({super.key});
@@ -28,7 +29,7 @@ class _AdminScreenState extends State<AdminScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
   }
 
   @override
@@ -78,6 +79,7 @@ class _AdminScreenState extends State<AdminScreen>
             tabs: const [
               Tab(text: 'نرخ بازی'),
               Tab(text: 'منوی کافه'),
+              Tab(text: 'فایل‌های داده'),
             ],
           ),
         ),
@@ -95,6 +97,7 @@ class _AdminScreenState extends State<AdminScreen>
                 onSave: () => _saveRates(context),
               ),
               _CafeManagementTab(items: state.cafeItems),
+              _DataFilesTab(dataPathFuture: state.dataDirectoryPath),
             ],
           ),
         ),
@@ -394,5 +397,77 @@ class _CafeManagementTab extends StatelessWidget {
     nameCtrl.dispose();
     priceCtrl.dispose();
     categoryCtrl.dispose();
+  }
+}
+
+class _DataFilesTab extends StatelessWidget {
+  const _DataFilesTab({required this.dataPathFuture});
+
+  final Future<String> dataPathFuture;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<String>(
+      future: dataPathFuture,
+      builder: (context, snapshot) {
+        final path = snapshot.data;
+        return ListView(
+          padding: const EdgeInsets.all(20),
+          children: [
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'ذخیره‌سازی اکسل',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'همه داده‌های اپ به‌صورت خودکار در فایل‌های اکسل ذخیره می‌شوند. '
+                      'با هر تغییر، همان فایل به‌روز می‌شود.',
+                      style: TextStyle(color: AppColors.textSecondary),
+                    ),
+                    if (path != null) ...[
+                      const SizedBox(height: 12),
+                      SelectableText(
+                        path,
+                        style: const TextStyle(fontFamily: 'monospace'),
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        await DataFolderService.openInFileManager();
+                      },
+                      icon: const Icon(Icons.folder_open),
+                      label: const Text('باز کردن پوشه داده'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'فایل‌ها',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            ...DataFolderService.dataFiles.map(
+              (file) => ListTile(
+                leading: const Icon(Icons.table_chart_outlined),
+                title: Text(file),
+                dense: true,
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 }

@@ -1,7 +1,4 @@
-import 'dart:io';
-
 import 'package:path/path.dart' as p;
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../models/app_settings.dart';
 import '../models/cafe_item.dart';
@@ -9,349 +6,546 @@ import '../models/cafe_order.dart';
 import '../models/customer.dart';
 import '../models/game_session.dart';
 import '../models/session_segment.dart';
+import 'excel/excel_data_paths.dart';
+import 'excel/excel_file_store.dart';
 
 class DatabaseService {
   DatabaseService._();
   static final DatabaseService instance = DatabaseService._();
 
-  Database? _db;
+  bool _ready = false;
+  Future<void>? _initFuture;
 
-  Future<Database> get database async {
-    if (_db != null) return _db!;
-    _db = await _initDb();
-    return _db!;
+  late ExcelFileStore _customersStore;
+  late ExcelFileStore _cafeItemsStore;
+  late ExcelFileStore _sessionsStore;
+  late ExcelFileStore _segmentsStore;
+  late ExcelFileStore _cafeOrdersStore;
+  late ExcelFileStore _billsStore;
+  late ExcelFileStore _settingsStore;
+
+  var _operationChain = Future<void>.value();
+
+  Future<void> get database async {
+    await _ensureReady();
   }
 
-  Future<Database> _initDb() async {
-    if (Platform.isWindows || Platform.isLinux) {
-      sqfliteFfiInit();
-      databaseFactory = databaseFactoryFfi;
-    }
+  Future<void> _ensureReady() {
+    _initFuture ??= _initialize();
+    return _initFuture!;
+  }
 
-    final dbPath = await getDatabasesPath();
-    final path = p.join(dbPath, 'gamenet.db');
+  Future<T> _serialized<T>(Future<T> Function() action) {
+    final result = _operationChain.then((_) => action());
+    _operationChain = result.then((_) {}, onError: (_) {});
+    return result;
+  }
 
-    return openDatabase(
-      path,
-      version: 1,
-      onCreate: (db, version) async {
-        await db.execute('''
-          CREATE TABLE customers (
-            id TEXT PRIMARY KEY,
-            first_name TEXT NOT NULL,
-            last_name TEXT NOT NULL,
-            phone TEXT NOT NULL,
-            created_at TEXT NOT NULL
-          )
-        ''');
+  Future<void> _initialize() async {
+    if (_ready) return;
 
-        await db.execute('''
-          CREATE TABLE cafe_items (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            price INTEGER NOT NULL,
-            category TEXT NOT NULL,
-            is_active INTEGER NOT NULL DEFAULT 1
-          )
-        ''');
+    final dir = await ExcelDataPaths.ensureDataDirectory();
 
-        await db.execute('''
-          CREATE TABLE game_sessions (
-            id TEXT PRIMARY KEY,
-            customer_id TEXT NOT NULL,
-            service_type TEXT NOT NULL,
-            status TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            ended_at TEXT,
-            FOREIGN KEY (customer_id) REFERENCES customers(id)
-          )
-        ''');
-
-        await db.execute('''
-          CREATE TABLE session_segments (
-            id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL,
-            player_count INTEGER NOT NULL,
-            hourly_rate INTEGER NOT NULL,
-            start_time TEXT NOT NULL,
-            end_time TEXT,
-            FOREIGN KEY (session_id) REFERENCES game_sessions(id)
-          )
-        ''');
-
-        await db.execute('''
-          CREATE TABLE cafe_orders (
-            id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL,
-            item_id TEXT NOT NULL,
-            item_name TEXT NOT NULL,
-            quantity INTEGER NOT NULL,
-            unit_price INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES game_sessions(id)
-          )
-        ''');
-
-        await db.execute('''
-          CREATE TABLE settings (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            hourly_rate_1 INTEGER NOT NULL,
-            hourly_rate_2 INTEGER NOT NULL,
-            hourly_rate_3 INTEGER NOT NULL,
-            hourly_rate_4 INTEGER NOT NULL,
-            currency_label TEXT NOT NULL
-          )
-        ''');
-
-        await db.insert('settings', {
-          'id': 1,
-          ...const AppSettings().toMap(),
-        });
-
-        await _seedCafeItems(db);
-      },
+    _customersStore = ExcelFileStore(
+      filePath: p.join(dir, ExcelDataPaths.customersFile),
+      columns: const [
+        'id',
+        'first_name',
+        'last_name',
+        'phone',
+        'created_at',
+      ],
+      headers: const [
+        'شناسه',
+        'نام',
+        'نام خانوادگی',
+        'شماره تلفن',
+        'تاریخ ثبت',
+      ],
     );
+
+    _cafeItemsStore = ExcelFileStore(
+      filePath: p.join(dir, ExcelDataPaths.cafeItemsFile),
+      columns: const ['id', 'name', 'price', 'category', 'is_active'],
+      headers: const [
+        'شناسه',
+        'نام',
+        'قیمت',
+        'دسته',
+        'فعال',
+      ],
+    );
+
+    _sessionsStore = ExcelFileStore(
+      filePath: p.join(dir, ExcelDataPaths.sessionsFile),
+      columns: const [
+        'id',
+        'customer_id',
+        'service_type',
+        'status',
+        'created_at',
+        'ended_at',
+      ],
+      headers: const [
+        'شناسه',
+        'شناسه مشتری',
+        'نوع سرویس',
+        'وضعیت',
+        'تاریخ شروع',
+        'تاریخ پایان',
+      ],
+    );
+
+    _segmentsStore = ExcelFileStore(
+      filePath: p.join(dir, ExcelDataPaths.segmentsFile),
+      columns: const [
+        'id',
+        'session_id',
+        'player_count',
+        'hourly_rate',
+        'start_time',
+        'end_time',
+      ],
+      headers: const [
+        'شناسه',
+        'شناسه جلسه',
+        'تعداد بازیکن',
+        'نرخ ساعتی',
+        'شروع',
+        'پایان',
+      ],
+    );
+
+    _cafeOrdersStore = ExcelFileStore(
+      filePath: p.join(dir, ExcelDataPaths.cafeOrdersFile),
+      columns: const [
+        'id',
+        'session_id',
+        'item_id',
+        'item_name',
+        'quantity',
+        'unit_price',
+        'created_at',
+      ],
+      headers: const [
+        'شناسه',
+        'شناسه جلسه',
+        'شناسه آیتم',
+        'نام آیتم',
+        'تعداد',
+        'قیمت واحد',
+        'تاریخ',
+      ],
+    );
+
+    _billsStore = ExcelFileStore(
+      filePath: p.join(dir, ExcelDataPaths.billsFile),
+      columns: const [
+        'session_id',
+        'customer_id',
+        'customer_name',
+        'gaming_cost',
+        'cafe_cost',
+        'total_cost',
+        'started_at',
+        'ended_at',
+      ],
+      headers: const [
+        'شناسه جلسه',
+        'شناسه مشتری',
+        'نام مشتری',
+        'هزینه بازی',
+        'هزینه کافه',
+        'جمع کل',
+        'تاریخ شروع',
+        'تاریخ پایان',
+      ],
+    );
+
+    _settingsStore = ExcelFileStore(
+      filePath: p.join(dir, ExcelDataPaths.settingsFile),
+      columns: const [
+        'hourly_rate_1',
+        'hourly_rate_2',
+        'hourly_rate_3',
+        'hourly_rate_4',
+        'currency_label',
+      ],
+      headers: const [
+        'نرخ ۱ نفره',
+        'نرخ ۲ نفره',
+        'نرخ ۳ نفره',
+        'نرخ ۴ نفره',
+        'واحد پول',
+      ],
+    );
+
+    await _customersStore.ensureExists();
+    await _cafeItemsStore.ensureExists();
+    await _sessionsStore.ensureExists();
+    await _segmentsStore.ensureExists();
+    await _cafeOrdersStore.ensureExists();
+    await _billsStore.ensureExists();
+    await _settingsStore.ensureExists();
+
+    await _seedDefaultsIfNeeded();
+    _ready = true;
   }
 
-  Future<void> _seedCafeItems(Database db) async {
-    final items = [
-      {'id': 'c1', 'name': 'چای', 'price': 25000, 'category': 'نوشیدنی'},
-      {'id': 'c2', 'name': 'قهوه', 'price': 45000, 'category': 'نوشیدنی'},
-      {'id': 'c3', 'name': 'آب معدنی', 'price': 15000, 'category': 'نوشیدنی'},
-      {'id': 'c4', 'name': 'نوشابه', 'price': 30000, 'category': 'نوشیدنی'},
-      {'id': 'c5', 'name': 'چیپس', 'price': 35000, 'category': 'تنقلات'},
-      {'id': 'c6', 'name': 'پفک', 'price': 30000, 'category': 'تنقلات'},
-      {'id': 'c7', 'name': 'ساندویچ', 'price': 85000, 'category': 'غذا'},
-      {'id': 'c8', 'name': 'پیتزا', 'price': 120000, 'category': 'غذا'},
-    ];
-
-    for (final item in items) {
-      await db.insert('cafe_items', {
-        ...item,
-        'is_active': 1,
-      });
+  Future<void> _seedDefaultsIfNeeded() async {
+    final settingsRows = await _settingsStore.readAll();
+    if (settingsRows.isEmpty) {
+      await _settingsStore.writeAll([const AppSettings().toMap()]);
     }
+
+    final cafeRows = await _cafeItemsStore.readAll();
+    if (cafeRows.isEmpty) {
+      final items = [
+        {'id': 'c1', 'name': 'چای', 'price': '25000', 'category': 'نوشیدنی', 'is_active': '1'},
+        {'id': 'c2', 'name': 'قهوه', 'price': '45000', 'category': 'نوشیدنی', 'is_active': '1'},
+        {'id': 'c3', 'name': 'آب معدنی', 'price': '15000', 'category': 'نوشیدنی', 'is_active': '1'},
+        {'id': 'c4', 'name': 'نوشابه', 'price': '30000', 'category': 'نوشیدنی', 'is_active': '1'},
+        {'id': 'c5', 'name': 'چیپس', 'price': '35000', 'category': 'تنقلات', 'is_active': '1'},
+        {'id': 'c6', 'name': 'پفک', 'price': '30000', 'category': 'تنقلات', 'is_active': '1'},
+        {'id': 'c7', 'name': 'ساندویچ', 'price': '85000', 'category': 'غذا', 'is_active': '1'},
+        {'id': 'c8', 'name': 'پیتزا', 'price': '120000', 'category': 'غذا', 'is_active': '1'},
+      ];
+      await _cafeItemsStore.writeAll(items);
+    }
+  }
+
+  Map<String, dynamic> _parseRow(Map<String, dynamic> row) {
+    return row.map((key, value) => MapEntry(key, value.toString()));
+  }
+
+  Map<String, dynamic> _parseSessionRow(Map<String, dynamic> row) {
+    final map = _parseRow(row);
+    if (map['ended_at']?.isEmpty ?? true) {
+      map.remove('ended_at');
+    }
+    return map;
+  }
+
+  GameSession _sessionFromRow(Map<String, dynamic> row) =>
+      GameSession.fromMap(_parseSessionRow(row));
+
+  int _asInt(dynamic value) {
+    if (value is int) return value;
+    if (value is double) return value.round();
+    return int.parse(value.toString());
   }
 
   // ── Customers ──
 
-  Future<List<Customer>> getCustomers() async {
-    final db = await database;
-    final rows = await db.query('customers', orderBy: 'created_at DESC');
-    return rows.map(Customer.fromMap).toList();
-  }
+  Future<List<Customer>> getCustomers() => _serialized(() async {
+        await _ensureReady();
+        final rows = await _customersStore.readAll();
+        return rows
+            .map(_parseRow)
+            .map(Customer.fromMap)
+            .toList()
+          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      });
 
-  Future<Customer?> getCustomer(String id) async {
-    final db = await database;
-    final rows = await db.query('customers', where: 'id = ?', whereArgs: [id]);
-    if (rows.isEmpty) return null;
-    return Customer.fromMap(rows.first);
-  }
+  Future<Customer?> getCustomer(String id) => _serialized(() async {
+        await _ensureReady();
+        final rows = await _customersStore.readAll();
+        final row = rows.where((r) => r['id'] == id).firstOrNull;
+        if (row == null) return null;
+        return Customer.fromMap(_parseRow(row));
+      });
 
-  Future<void> insertCustomer(Customer customer) async {
-    final db = await database;
-    await db.insert('customers', customer.toMap());
-  }
+  Future<void> insertCustomer(Customer customer) => _serialized(() async {
+        await _ensureReady();
+        final rows = await _customersStore.readAll();
+        rows.add(customer.toMap().map((k, v) => MapEntry(k, v.toString())));
+        await _customersStore.writeAll(rows);
+      });
 
-  Future<void> updateCustomer(Customer customer) async {
-    final db = await database;
-    await db.update(
-      'customers',
-      customer.toMap(),
-      where: 'id = ?',
-      whereArgs: [customer.id],
-    );
-  }
+  Future<void> updateCustomer(Customer customer) => _serialized(() async {
+        await _ensureReady();
+        final rows = await _customersStore.readAll();
+        final index = rows.indexWhere((r) => r['id'] == customer.id);
+        if (index == -1) return;
+        rows[index] =
+            customer.toMap().map((k, v) => MapEntry(k, v.toString()));
+        await _customersStore.writeAll(rows);
+      });
 
-  Future<void> deleteCustomer(String id) async {
-    final db = await database;
-    await db.delete('customers', where: 'id = ?', whereArgs: [id]);
-  }
+  Future<void> deleteCustomer(String id) => _serialized(() async {
+        await _ensureReady();
+        final rows = await _customersStore.readAll();
+        rows.removeWhere((r) => r['id'] == id);
+        await _customersStore.writeAll(rows);
+      });
 
   // ── Cafe Items ──
 
-  Future<List<CafeItem>> getCafeItems() async {
-    final db = await database;
-    final rows = await db.query('cafe_items', orderBy: 'category, name');
-    return rows.map(CafeItem.fromMap).toList();
-  }
+  Future<List<CafeItem>> getCafeItems() => _serialized(() async {
+        await _ensureReady();
+        final rows = await _cafeItemsStore.readAll();
+        return rows.map((row) {
+          final map = _parseRow(row);
+          map['price'] = _asInt(map['price']);
+          map['is_active'] = _asInt(map['is_active']);
+          return CafeItem.fromMap(map);
+        }).toList()
+          ..sort((a, b) {
+            final c = a.category.compareTo(b.category);
+            return c != 0 ? c : a.name.compareTo(b.name);
+          });
+      });
 
-  Future<void> insertCafeItem(CafeItem item) async {
-    final db = await database;
-    await db.insert('cafe_items', item.toMap());
-  }
+  Future<void> insertCafeItem(CafeItem item) => _serialized(() async {
+        await _ensureReady();
+        final rows = await _cafeItemsStore.readAll();
+        rows.add(item.toMap().map((k, v) => MapEntry(k, v.toString())));
+        await _cafeItemsStore.writeAll(rows);
+      });
 
-  Future<void> updateCafeItem(CafeItem item) async {
-    final db = await database;
-    await db.update(
-      'cafe_items',
-      item.toMap(),
-      where: 'id = ?',
-      whereArgs: [item.id],
-    );
-  }
+  Future<void> updateCafeItem(CafeItem item) => _serialized(() async {
+        await _ensureReady();
+        final rows = await _cafeItemsStore.readAll();
+        final index = rows.indexWhere((r) => r['id'] == item.id);
+        if (index == -1) return;
+        rows[index] = item.toMap().map((k, v) => MapEntry(k, v.toString()));
+        await _cafeItemsStore.writeAll(rows);
+      });
 
-  Future<void> deleteCafeItem(String id) async {
-    final db = await database;
-    await db.delete('cafe_items', where: 'id = ?', whereArgs: [id]);
-  }
+  Future<void> deleteCafeItem(String id) => _serialized(() async {
+        await _ensureReady();
+        final rows = await _cafeItemsStore.readAll();
+        rows.removeWhere((r) => r['id'] == id);
+        await _cafeItemsStore.writeAll(rows);
+      });
 
   // ── Sessions ──
 
-  Future<void> insertSession(GameSession session) async {
-    final db = await database;
-    await db.insert('game_sessions', session.toMap());
-    for (final segment in session.segments) {
-      await db.insert('session_segments', segment.toMap());
-    }
-  }
+  Future<void> insertSession(GameSession session) => _serialized(() async {
+        await _ensureReady();
+        final sessions = await _sessionsStore.readAll();
+        sessions.add(
+          session.toMap().map((k, v) => MapEntry(k, v?.toString() ?? '')),
+        );
+        await _sessionsStore.writeAll(sessions);
 
-  Future<void> updateSession(GameSession session) async {
-    final db = await database;
-    await db.update(
-      'game_sessions',
-      session.toMap(),
-      where: 'id = ?',
-      whereArgs: [session.id],
-    );
-  }
+        if (session.segments.isNotEmpty) {
+          final segments = await _segmentsStore.readAll();
+          for (final segment in session.segments) {
+            segments.add(
+              segment.toMap().map((k, v) => MapEntry(k, v?.toString() ?? '')),
+            );
+          }
+          await _segmentsStore.writeAll(segments);
+        }
+      });
 
-  Future<void> insertSegment(SessionSegment segment) async {
-    final db = await database;
-    await db.insert('session_segments', segment.toMap());
-  }
+  Future<void> updateSession(GameSession session) => _serialized(() async {
+        await _ensureReady();
+        final sessions = await _sessionsStore.readAll();
+        final index = sessions.indexWhere((r) => r['id'] == session.id);
+        if (index == -1) return;
+        sessions[index] =
+            session.toMap().map((k, v) => MapEntry(k, v?.toString() ?? ''));
+        await _sessionsStore.writeAll(sessions);
 
-  Future<void> updateSegment(SessionSegment segment) async {
-    final db = await database;
-    await db.update(
-      'session_segments',
-      segment.toMap(),
-      where: 'id = ?',
-      whereArgs: [segment.id],
-    );
-  }
+        if (!session.isActive && session.endedAt != null) {
+          await _upsertBill(session);
+        }
+      });
 
-  Future<void> insertCafeOrder(CafeOrder order) async {
-    final db = await database;
-    await db.insert('cafe_orders', order.toMap());
-  }
+  Future<void> insertSegment(SessionSegment segment) => _serialized(() async {
+        await _ensureReady();
+        final rows = await _segmentsStore.readAll();
+        rows.add(
+          segment.toMap().map((k, v) => MapEntry(k, v?.toString() ?? '')),
+        );
+        await _segmentsStore.writeAll(rows);
+      });
 
-  Future<void> updateCafeOrder(CafeOrder order) async {
-    final db = await database;
-    await db.update(
-      'cafe_orders',
-      order.toMap(),
-      where: 'id = ?',
-      whereArgs: [order.id],
-    );
-  }
+  Future<void> updateSegment(SessionSegment segment) => _serialized(() async {
+        await _ensureReady();
+        final rows = await _segmentsStore.readAll();
+        final index = rows.indexWhere((r) => r['id'] == segment.id);
+        if (index == -1) return;
+        rows[index] =
+            segment.toMap().map((k, v) => MapEntry(k, v?.toString() ?? ''));
+        await _segmentsStore.writeAll(rows);
+      });
 
-  Future<void> deleteCafeOrder(String id) async {
-    final db = await database;
-    await db.delete('cafe_orders', where: 'id = ?', whereArgs: [id]);
-  }
+  Future<void> insertCafeOrder(CafeOrder order) => _serialized(() async {
+        await _ensureReady();
+        final rows = await _cafeOrdersStore.readAll();
+        rows.add(order.toMap().map((k, v) => MapEntry(k, v.toString())));
+        await _cafeOrdersStore.writeAll(rows);
+      });
 
-  Future<CafeOrder?> getCafeOrder(String id) async {
-    final db = await database;
-    final rows =
-        await db.query('cafe_orders', where: 'id = ?', whereArgs: [id]);
-    if (rows.isEmpty) return null;
-    return CafeOrder.fromMap(rows.first);
-  }
+  Future<void> updateCafeOrder(CafeOrder order) => _serialized(() async {
+        await _ensureReady();
+        final rows = await _cafeOrdersStore.readAll();
+        final index = rows.indexWhere((r) => r['id'] == order.id);
+        if (index == -1) return;
+        rows[index] = order.toMap().map((k, v) => MapEntry(k, v.toString()));
+        await _cafeOrdersStore.writeAll(rows);
+      });
 
-  Future<List<GameSession>> getSessionsForCustomer(String customerId) async {
-    final db = await database;
-    final rows = await db.query(
-      'game_sessions',
-      where: 'customer_id = ?',
-      whereArgs: [customerId],
-      orderBy: 'created_at DESC',
-    );
+  Future<void> deleteCafeOrder(String id) => _serialized(() async {
+        await _ensureReady();
+        final rows = await _cafeOrdersStore.readAll();
+        rows.removeWhere((r) => r['id'] == id);
+        await _cafeOrdersStore.writeAll(rows);
+      });
 
-    final sessions = <GameSession>[];
-    for (final row in rows) {
-      sessions.add(await _loadSessionDetails(GameSession.fromMap(row)));
-    }
-    return sessions;
-  }
+  Future<CafeOrder?> getCafeOrder(String id) => _serialized(() async {
+        await _ensureReady();
+        final rows = await _cafeOrdersStore.readAll();
+        final row = rows.where((r) => r['id'] == id).firstOrNull;
+        if (row == null) return null;
+        final map = _parseRow(row);
+        map['quantity'] = _asInt(map['quantity']);
+        map['unit_price'] = _asInt(map['unit_price']);
+        return CafeOrder.fromMap(map);
+      });
 
-  Future<List<GameSession>> getActiveSessions() async {
-    final db = await database;
-    final rows = await db.query(
-      'game_sessions',
-      where: "status = 'active'",
-      orderBy: 'created_at DESC',
-    );
+  Future<List<GameSession>> getSessionsForCustomer(String customerId) =>
+      _serialized(() async {
+        await _ensureReady();
+        final rows = await _sessionsStore.readAll();
+        final sessions = <GameSession>[];
+        for (final row in rows.where((r) => r['customer_id'] == customerId)) {
+          sessions.add(await _loadSessionDetails(_sessionFromRow(row)));
+        }
+        sessions.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+        return sessions;
+      });
 
-    final sessions = <GameSession>[];
-    for (final row in rows) {
-      sessions.add(await _loadSessionDetails(GameSession.fromMap(row)));
-    }
-    return sessions;
-  }
+  Future<List<GameSession>> getActiveSessions() => _serialized(() async {
+        await _ensureReady();
+        final rows = await _sessionsStore.readAll();
+        final sessions = <GameSession>[];
+        for (final row in rows.where((r) => r['status'] == 'active')) {
+          sessions.add(await _loadSessionDetails(_sessionFromRow(row)));
+        }
+        sessions.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+        return sessions;
+      });
 
-  Future<List<GameSession>> getSessionsEndedSince(DateTime since) async {
-    final db = await database;
-    final rows = await db.query(
-      'game_sessions',
-      where: "status = 'ended' AND ended_at >= ?",
-      whereArgs: [since.toIso8601String()],
-      orderBy: 'ended_at DESC',
-    );
+  Future<List<GameSession>> getSessionsEndedSince(DateTime since) =>
+      _serialized(() async {
+        await _ensureReady();
+        final rows = await _sessionsStore.readAll();
+        final sessions = <GameSession>[];
+        for (final row in rows.where((r) => r['status'] == 'ended')) {
+          final map = _parseRow(row);
+          final endedAt = map['ended_at'];
+          if (endedAt == null || endedAt.isEmpty) continue;
+          if (DateTime.parse(endedAt).isBefore(since)) continue;
+          sessions.add(await _loadSessionDetails(_sessionFromRow(map)));
+        }
+        sessions.sort((a, b) {
+          final ae = a.endedAt ?? a.createdAt;
+          final be = b.endedAt ?? b.createdAt;
+          return be.compareTo(ae);
+        });
+        return sessions;
+      });
 
-    final sessions = <GameSession>[];
-    for (final row in rows) {
-      sessions.add(await _loadSessionDetails(GameSession.fromMap(row)));
-    }
-    return sessions;
-  }
-
-  Future<GameSession?> getSession(String id) async {
-    final db = await database;
-    final rows =
-        await db.query('game_sessions', where: 'id = ?', whereArgs: [id]);
-    if (rows.isEmpty) return null;
-    return _loadSessionDetails(GameSession.fromMap(rows.first));
-  }
+  Future<GameSession?> getSession(String id) => _serialized(() async {
+        await _ensureReady();
+        final rows = await _sessionsStore.readAll();
+        final row = rows.where((r) => r['id'] == id).firstOrNull;
+        if (row == null) return null;
+        return _loadSessionDetails(_sessionFromRow(row));
+      });
 
   Future<GameSession> _loadSessionDetails(GameSession session) async {
-    final db = await database;
+    final segmentRows = await _segmentsStore.readAll();
+    final orderRows = await _cafeOrdersStore.readAll();
 
-    final segmentRows = await db.query(
-      'session_segments',
-      where: 'session_id = ?',
-      whereArgs: [session.id],
-      orderBy: 'start_time ASC',
-    );
+    final segments = segmentRows
+        .where((r) => r['session_id'] == session.id)
+        .map(_parseRow)
+        .map((map) {
+          map['player_count'] = _asInt(map['player_count']);
+          map['hourly_rate'] = _asInt(map['hourly_rate']);
+          if (map['end_time']?.isEmpty ?? true) {
+            map['end_time'] = null;
+          }
+          return SessionSegment.fromMap(map);
+        })
+        .toList()
+      ..sort((a, b) => a.startTime.compareTo(b.startTime));
 
-    final orderRows = await db.query(
-      'cafe_orders',
-      where: 'session_id = ?',
-      whereArgs: [session.id],
-      orderBy: 'created_at ASC',
-    );
+    final cafeOrders = orderRows
+        .where((r) => r['session_id'] == session.id)
+        .map(_parseRow)
+        .map((map) {
+          map['quantity'] = _asInt(map['quantity']);
+          map['unit_price'] = _asInt(map['unit_price']);
+          return CafeOrder.fromMap(map);
+        })
+        .toList()
+      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
 
-    return session.copyWith(
-      segments: segmentRows.map(SessionSegment.fromMap).toList(),
-      cafeOrders: orderRows.map(CafeOrder.fromMap).toList(),
-    );
+    return session.copyWith(segments: segments, cafeOrders: cafeOrders);
+  }
+
+  Future<void> _upsertBill(GameSession session) async {
+    final loaded = await _loadSessionDetails(session);
+    final customer = await getCustomer(loaded.customerId);
+    final customerName = customer?.fullName ?? 'نامشخص';
+
+    final bill = {
+      'session_id': loaded.id,
+      'customer_id': loaded.customerId,
+      'customer_name': customerName,
+      'gaming_cost': '${loaded.gamingCost}',
+      'cafe_cost': '${loaded.cafeCost}',
+      'total_cost': '${loaded.totalCost}',
+      'started_at': loaded.createdAt.toIso8601String(),
+      'ended_at': loaded.endedAt?.toIso8601String() ?? '',
+    };
+
+    final rows = await _billsStore.readAll();
+    final index = rows.indexWhere((r) => r['session_id'] == loaded.id);
+    if (index == -1) {
+      rows.add(bill);
+    } else {
+      rows[index] = bill;
+    }
+    await _billsStore.writeAll(rows);
   }
 
   // ── Settings ──
 
-  Future<AppSettings> getSettings() async {
-    final db = await database;
-    final rows = await db.query('settings', where: 'id = 1');
-    if (rows.isEmpty) return const AppSettings();
-    return AppSettings.fromMap(rows.first);
+  Future<AppSettings> getSettings() => _serialized(() async {
+        await _ensureReady();
+        final rows = await _settingsStore.readAll();
+        if (rows.isEmpty) return const AppSettings();
+        final map = _parseRow(rows.first);
+        map['hourly_rate_1'] = _asInt(map['hourly_rate_1']);
+        map['hourly_rate_2'] = _asInt(map['hourly_rate_2']);
+        map['hourly_rate_3'] = _asInt(map['hourly_rate_3']);
+        map['hourly_rate_4'] = _asInt(map['hourly_rate_4']);
+        return AppSettings.fromMap(map);
+      });
+
+  Future<void> saveSettings(AppSettings settings) => _serialized(() async {
+        await _ensureReady();
+        await _settingsStore.writeAll([
+          settings.toMap().map((k, v) => MapEntry(k, v.toString())),
+        ]);
+      });
+
+  Future<String> getDataDirectoryPath() async {
+    await _ensureReady();
+    return ExcelDataPaths.documentsDirectory();
   }
 
-  Future<void> saveSettings(AppSettings settings) async {
-    final db = await database;
-    await db.update(
-      'settings',
-      settings.toMap(),
-      where: 'id = 1',
-    );
+  /// فقط برای تست
+  void resetForTest() {
+    _ready = false;
+    _initFuture = null;
+    _operationChain = Future<void>.value();
   }
 }

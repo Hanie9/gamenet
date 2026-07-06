@@ -359,6 +359,8 @@ class AppState extends ChangeNotifier {
 
   // ── Stats ──
 
+  Future<String> get dataDirectoryPath => _db.getDataDirectoryPath();
+
   CustomerStats statsForCustomer(List<GameSession> sessions) {
     final ended = sessions.where((s) => !s.isActive).toList();
     return CustomerStats(
