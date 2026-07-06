@@ -4,29 +4,63 @@ import 'dart:typed_data';
 import 'package:excel/excel.dart';
 
 /// خواندن و نوشتن یک جدول در فایل اکسل (ردیف اول = عنوان ستون‌ها)
+/// روی ویندوز می‌تواند همزمان در چند مسیر (مثلاً C و D) ذخیره کند.
 class ExcelFileStore {
   ExcelFileStore({
-    required this.filePath,
+    required List<String> filePaths,
     required this.columns,
     required this.headers,
-  }) : assert(columns.length == headers.length);
+  }) : filePaths = List.unmodifiable(filePaths),
+       assert(columns.length == headers.length),
+       assert(filePaths.isNotEmpty);
 
-  final String filePath;
+  final List<String> filePaths;
   final List<String> columns;
   final List<String> headers;
 
+  String get primaryPath => filePaths.first;
+
   Future<void> ensureExists() async {
-    final file = File(filePath);
-    if (await file.exists()) return;
+    final existing = await _findExistingPath();
+    if (existing != null) {
+      await _mirrorFile(existing);
+      return;
+    }
     await writeAll(const []);
   }
 
-  Future<List<Map<String, dynamic>>> readAll() async {
-    final file = File(filePath);
-    if (!await file.exists()) {
-      await ensureExists();
-      return [];
+  Future<String?> _findExistingPath() async {
+    for (final path in filePaths) {
+      if (await File(path).exists()) return path;
     }
+    return null;
+  }
+
+  Future<void> _mirrorFile(String sourcePath) async {
+    final bytes = await File(sourcePath).readAsBytes();
+    if (bytes.isEmpty) return;
+    for (final path in filePaths) {
+      if (path == sourcePath) continue;
+      final file = File(path);
+      await file.parent.create(recursive: true);
+      await file.writeAsBytes(bytes, flush: true);
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> readAll() async {
+    for (final path in filePaths) {
+      final rows = await _readFromPath(path);
+      if (rows.isNotEmpty || await File(path).exists()) {
+        return rows;
+      }
+    }
+    await ensureExists();
+    return [];
+  }
+
+  Future<List<Map<String, dynamic>>> _readFromPath(String path) async {
+    final file = File(path);
+    if (!await file.exists()) return [];
 
     final bytes = await file.readAsBytes();
     if (bytes.isEmpty) return [];
@@ -35,7 +69,7 @@ class ExcelFileStore {
     if (excel.tables.isEmpty) return [];
 
     final sheet = excel.tables.values.first;
-    if (sheet == null || sheet.maxRows <= 1) return [];
+    if (sheet.maxRows <= 1) return [];
 
     final rows = <Map<String, dynamic>>[];
     for (var rowIndex = 1; rowIndex < sheet.maxRows; rowIndex++) {
@@ -62,6 +96,15 @@ class ExcelFileStore {
   }
 
   Future<void> writeAll(List<Map<String, dynamic>> rows) async {
+    final bytes = _encode(rows);
+    for (final path in filePaths) {
+      final file = File(path);
+      await file.parent.create(recursive: true);
+      await file.writeAsBytes(bytes, flush: true);
+    }
+  }
+
+  Uint8List _encode(List<Map<String, dynamic>> rows) {
     final excel = Excel.createExcel();
     final defaultName = excel.getDefaultSheet();
     if (defaultName != null && defaultName != 'Sheet1') {
@@ -113,12 +156,9 @@ class ExcelFileStore {
 
     final encoded = excel.encode();
     if (encoded == null) {
-      throw StateError('ساخت فایل اکسل ناموفق بود: $filePath');
+      throw StateError('ساخت فایل اکسل ناموفق بود: $primaryPath');
     }
-
-    final file = File(filePath);
-    await file.parent.create(recursive: true);
-    await file.writeAsBytes(Uint8List.fromList(encoded), flush: true);
+    return Uint8List.fromList(encoded);
   }
 
   static String? _cellText(Data? cell) {
@@ -128,7 +168,9 @@ class ExcelFileStore {
     if (value is IntCellValue) return value.value.toString();
     if (value is DoubleCellValue) return value.value.toString();
     if (value is BoolCellValue) return value.value ? '1' : '0';
-    if (value is DateCellValue) return value.asDateTimeLocal().toIso8601String();
+    if (value is DateCellValue) {
+      return value.asDateTimeLocal().toIso8601String();
+    }
     if (value is DateTimeCellValue) {
       return value.asDateTimeLocal().toIso8601String();
     }

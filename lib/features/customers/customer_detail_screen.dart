@@ -33,13 +33,21 @@ class _CustomerDetailScreenState extends State<CustomerDetailScreen> {
   }
 
   Future<void> _loadHistory() async {
-    final sessions =
-        await context.read<AppState>().getCustomerHistory(widget.customer.id);
-    if (mounted) {
+    try {
+      final sessions = await context
+          .read<AppState>()
+          .getCustomerHistory(widget.customer.id);
+      if (!mounted) return;
       setState(() {
         _history = sessions;
         _loading = false;
       });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('خطا در بارگذاری تاریخچه: $e')),
+      );
     }
   }
 

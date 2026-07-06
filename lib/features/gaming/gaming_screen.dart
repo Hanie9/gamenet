@@ -670,6 +670,9 @@ class _SessionCard extends StatelessWidget {
   }
 
   Future<void> _endSession(BuildContext context) async {
+    final navigatorContext = Navigator.of(context, rootNavigator: true).context;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -690,19 +693,17 @@ class _SessionCard extends StatelessWidget {
       ),
     );
 
-    if (confirmed != true || !context.mounted) return;
+    if (confirmed != true) return;
 
     try {
       final ended = await context.read<AppState>().endSession(session.id);
-      if (context.mounted) {
-        await BillDialog.show(context, session: ended, customer: customer);
-      }
+      await BillDialog.show(
+        navigatorContext,
+        session: ended,
+        customer: customer,
+      );
     } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('$e')));
-      }
+      messenger?.showSnackBar(SnackBar(content: Text('$e')));
     }
   }
 }

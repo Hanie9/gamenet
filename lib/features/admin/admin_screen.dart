@@ -9,6 +9,7 @@ import '../../core/widgets/section_header.dart';
 import '../../models/cafe_item.dart';
 import '../../services/app_state.dart';
 import '../../services/data_folder_service.dart';
+import '../../services/monthly_report_service.dart';
 
 class AdminScreen extends StatefulWidget {
   const AdminScreen({super.key});
@@ -97,7 +98,7 @@ class _AdminScreenState extends State<AdminScreen>
                 onSave: () => _saveRates(context),
               ),
               _CafeManagementTab(items: state.cafeItems),
-              _DataFilesTab(dataPathFuture: state.dataDirectoryPath),
+              _DataFilesTab(dataPathsFuture: state.dataDirectoryPaths),
             ],
           ),
         ),
@@ -401,16 +402,16 @@ class _CafeManagementTab extends StatelessWidget {
 }
 
 class _DataFilesTab extends StatelessWidget {
-  const _DataFilesTab({required this.dataPathFuture});
+  const _DataFilesTab({required this.dataPathsFuture});
 
-  final Future<String> dataPathFuture;
+  final Future<List<String>> dataPathsFuture;
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<String>(
-      future: dataPathFuture,
+    return FutureBuilder<List<String>>(
+      future: dataPathsFuture,
       builder: (context, snapshot) {
-        final path = snapshot.data;
+        final paths = snapshot.data ?? const [];
         return ListView(
           padding: const EdgeInsets.all(20),
           children: [
@@ -430,23 +431,44 @@ class _DataFilesTab extends StatelessWidget {
                     const SizedBox(height: 8),
                     const Text(
                       'همه داده‌های اپ به‌صورت خودکار در فایل‌های اکسل ذخیره می‌شوند. '
-                      'با هر تغییر، همان فایل به‌روز می‌شود.',
+                      'روی ویندوز، هر تغییر همزمان در درایو C و D (در صورت وجود) اعمال می‌شود. '
+                      'در پایان هر ماه شمسی، گزارش ماهانه به‌صورت خودکار ساخته می‌شود.',
                       style: TextStyle(color: AppColors.textSecondary),
                     ),
-                    if (path != null) ...[
+                    if (paths.isNotEmpty) ...[
                       const SizedBox(height: 12),
-                      SelectableText(
-                        path,
-                        style: const TextStyle(fontFamily: 'monospace'),
-                      ),
+                      for (final path in paths)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: SelectableText(
+                            path,
+                            style: const TextStyle(fontFamily: 'monospace'),
+                          ),
+                        ),
                     ],
                     const SizedBox(height: 12),
-                    OutlinedButton.icon(
-                      onPressed: () async {
-                        await DataFolderService.openInFileManager();
-                      },
-                      icon: const Icon(Icons.folder_open),
-                      label: const Text('باز کردن پوشه داده'),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        OutlinedButton.icon(
+                          onPressed: () async {
+                            await DataFolderService.openInFileManager();
+                          },
+                          icon: const Icon(Icons.folder_open),
+                          label: const Text('باز کردن پوشه اصلی'),
+                        ),
+                        if (paths.length > 1)
+                          OutlinedButton.icon(
+                            onPressed: () async {
+                              await DataFolderService.openInFileManager(
+                                index: 1,
+                              );
+                            },
+                            icon: const Icon(Icons.folder_open),
+                            label: const Text('باز کردن پوشه D'),
+                          ),
+                      ],
                     ),
                   ],
                 ),
@@ -464,6 +486,36 @@ class _DataFilesTab extends StatelessWidget {
                 title: Text(file),
                 dense: true,
               ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'گزارش‌های ماهانه',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            FutureBuilder<List<String>>(
+              future: MonthlyReportService.instance.listReportFiles(),
+              builder: (context, reportSnapshot) {
+                final reports = reportSnapshot.data ?? const [];
+                if (reports.isEmpty) {
+                  return const ListTile(
+                    leading: Icon(Icons.summarize_outlined),
+                    title: Text('هنوز گزارش ماهانه‌ای ساخته نشده'),
+                    dense: true,
+                  );
+                }
+                return Column(
+                  children: reports
+                      .map(
+                        (file) => ListTile(
+                          leading: const Icon(Icons.summarize_outlined),
+                          title: Text(file),
+                          dense: true,
+                        ),
+                      )
+                      .toList(),
+                );
+              },
             ),
           ],
         );

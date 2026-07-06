@@ -1,5 +1,4 @@
 import 'package:flutter/foundation.dart';
-import 'package:uuid/uuid.dart';
 
 import '../models/app_settings.dart';
 import '../models/cafe_item.dart';
@@ -9,6 +8,7 @@ import '../models/game_session.dart';
 import '../models/service_type.dart';
 import '../models/session_segment.dart';
 import 'database_service.dart';
+import 'monthly_report_service.dart';
 
 class AppState extends ChangeNotifier {
   AppState() {
@@ -16,7 +16,6 @@ class AppState extends ChangeNotifier {
   }
 
   final _db = DatabaseService.instance;
-  final _uuid = const Uuid();
 
   bool _loading = true;
   List<Customer> _customers = [];
@@ -60,19 +59,16 @@ class AppState extends ChangeNotifier {
 
   Customer? get selectedCustomer {
     if (_selectedCustomerId == null) return null;
-    return _customers
-        .where((c) => c.id == _selectedCustomerId)
-        .firstOrNull;
+    return _customers.where((c) => c.id == _selectedCustomerId).firstOrNull;
   }
 
   GameSession? sessionForCustomer(String customerId) {
-    return _activeSessions
-        .where((s) => s.customerId == customerId)
-        .firstOrNull;
+    return _activeSessions.where((s) => s.customerId == customerId).firstOrNull;
   }
 
   Future<void> _init() async {
     await refresh();
+    await MonthlyReportService.instance.ensureReports();
     _loading = false;
     notifyListeners();
   }
@@ -104,7 +100,7 @@ class AppState extends ChangeNotifier {
     required String phone,
   }) async {
     final customer = Customer(
-      id: _uuid.v4(),
+      id: await _db.nextCustomerId(),
       firstName: firstName.trim(),
       lastName: lastName.trim(),
       phone: phone.trim(),
@@ -142,7 +138,7 @@ class AppState extends ChangeNotifier {
     required String category,
   }) async {
     final item = CafeItem(
-      id: _uuid.v4(),
+      id: await _db.nextCafeItemId(),
       name: name.trim(),
       price: price,
       category: category.trim(),
@@ -168,7 +164,7 @@ class AppState extends ChangeNotifier {
     if (existing != null) return existing;
 
     final session = GameSession(
-      id: _uuid.v4(),
+      id: await _db.nextSessionId(),
       customerId: customerId,
       serviceType: ServiceType.cafe,
       status: SessionStatus.active,
@@ -186,11 +182,7 @@ class AppState extends ChangeNotifier {
     int quantity = 1,
   }) async {
     final session = await getOrCreateActiveSessionForCustomer(customerId);
-    await orderCafeItem(
-      sessionId: session.id,
-      item: item,
-      quantity: quantity,
-    );
+    await orderCafeItem(sessionId: session.id, item: item, quantity: quantity);
   }
 
   Future<void> orderCafeItem({
@@ -204,15 +196,12 @@ class AppState extends ChangeNotifier {
         .firstOrNull;
 
     if (existing != null) {
-      await updateCafeOrderQuantity(
-        existing.id,
-        existing.quantity + quantity,
-      );
+      await updateCafeOrderQuantity(existing.id, existing.quantity + quantity);
       return;
     }
 
     final order = CafeOrder(
-      id: _uuid.v4(),
+      id: await _db.nextCafeOrderId(),
       sessionId: sessionId,
       itemId: item.id,
       itemName: item.name,
@@ -254,24 +243,22 @@ class AppState extends ChangeNotifier {
       }
       // جلسه کافه موجود — افزودن تایمر بازی به همان جلسه
       final segment = SessionSegment(
-        id: _uuid.v4(),
+        id: await _db.nextSegmentId(),
         sessionId: existing.id,
         playerCount: playerCount,
         hourlyRate: _settings.rateForPlayers(playerCount),
         startTime: DateTime.now(),
       );
       await _db.insertSegment(segment);
-      await _db.updateSession(
-        existing.copyWith(serviceType: serviceType),
-      );
+      await _db.updateSession(existing.copyWith(serviceType: serviceType));
       await refresh();
       final loaded = await _db.getSession(existing.id);
       return loaded ?? existing;
     }
 
-    final sessionId = _uuid.v4();
+    final sessionId = await _db.nextSessionId();
     final segment = SessionSegment(
-      id: _uuid.v4(),
+      id: await _db.nextSegmentId(),
       sessionId: sessionId,
       playerCount: playerCount,
       hourlyRate: _settings.rateForPlayers(playerCount),
@@ -317,7 +304,7 @@ class AppState extends ChangeNotifier {
     await _db.updateSegment(active.copyWith(endTime: now));
 
     final newSegment = SessionSegment(
-      id: _uuid.v4(),
+      id: await _db.nextSegmentId(),
       sessionId: sessionId,
       playerCount: newPlayerCount,
       hourlyRate: _settings.rateForPlayers(newPlayerCount),
@@ -335,13 +322,23 @@ class AppState extends ChangeNotifier {
 
     final now = DateTime.now();
     final active = session.activeSegment;
+    SessionSegment? closedSegment;
     if (active != null) {
-      await _db.updateSegment(active.copyWith(endTime: now));
+      closedSegment = active.copyWith(endTime: now);
+      await _db.updateSegment(closedSegment);
     }
+
+    final endedSegments = session.segments.map((segment) {
+      if (closedSegment != null && segment.id == closedSegment.id) {
+        return closedSegment;
+      }
+      return segment;
+    }).toList();
 
     final ended = session.copyWith(
       status: SessionStatus.ended,
       endedAt: now,
+      segments: endedSegments,
     );
     await _db.updateSession(ended);
     await refresh();
@@ -360,6 +357,8 @@ class AppState extends ChangeNotifier {
   // ── Stats ──
 
   Future<String> get dataDirectoryPath => _db.getDataDirectoryPath();
+
+  Future<List<String>> get dataDirectoryPaths => _db.getDataDirectoryPaths();
 
   CustomerStats statsForCustomer(List<GameSession> sessions) {
     final ended = sessions.where((s) => !s.isActive).toList();

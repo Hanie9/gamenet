@@ -242,15 +242,14 @@ class _CafeScreenState extends State<CafeScreen> {
     GameSession session,
     Customer customer,
   ) async {
+    final navigatorContext = Navigator.of(context, rootNavigator: true).context;
     try {
       final ended = await context.read<AppState>().endSession(session.id);
-      if (mounted) {
-        await BillDialog.show(
-          context,
-          session: ended,
-          customer: customer,
-        );
-      }
+      await BillDialog.show(
+        navigatorContext,
+        session: ended,
+        customer: customer,
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

@@ -25,7 +25,7 @@ class SessionSegment {
 
   int get cost {
     final minutes = duration.inSeconds / 60.0;
-    return (minutes / 60.0 * hourlyRate).ceil();
+    return (minutes / 60.0 * hourlyRate).round();
   }
 
   /// هزینه بخشی از این تایمر که در روز مشخص بوده
@@ -47,7 +47,37 @@ class SessionSegment {
     if (!overlapStart.isBefore(overlapEnd)) return 0;
 
     final minutes = overlapEnd.difference(overlapStart).inSeconds / 60.0;
-    return (minutes / 60.0 * hourlyRate).ceil();
+    return (minutes / 60.0 * hourlyRate).round();
+  }
+
+  /// مدت زمان این بخش که در بازه مشخص بوده
+  Duration durationForRange(
+    DateTime rangeStart,
+    DateTime rangeEnd, {
+    DateTime? now,
+  }) {
+    final segEnd = endTime ?? now ?? DateTime.now();
+    if (segEnd.isBefore(rangeStart) || !startTime.isBefore(segEnd)) {
+      return Duration.zero;
+    }
+    if (startTime.isAfter(rangeEnd)) return Duration.zero;
+
+    final overlapStart = startTime.isAfter(rangeStart) ? startTime : rangeStart;
+    final overlapEnd = segEnd.isBefore(rangeEnd) ? segEnd : rangeEnd;
+    if (!overlapStart.isBefore(overlapEnd)) return Duration.zero;
+    return overlapEnd.difference(overlapStart);
+  }
+
+  /// هزینه بخشی از این تایمر که در بازه مشخص بوده
+  int costForRange(
+    DateTime rangeStart,
+    DateTime rangeEnd, {
+    DateTime? now,
+  }) {
+    final seconds = durationForRange(rangeStart, rangeEnd, now: now).inSeconds;
+    if (seconds <= 0) return 0;
+    final minutes = seconds / 60.0;
+    return (minutes / 60.0 * hourlyRate).round();
   }
 
   SessionSegment copyWith({DateTime? endTime}) {
